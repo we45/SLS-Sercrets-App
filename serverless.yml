@@ -1,0 +1,131 @@
+service: secrets-app
+
+provider:
+  name: aws
+  runtime: python3.6
+  region: us-west-2
+  role: LambdaRole
+  environment:
+    KEY_ID: 
+      "Fn::Join": ["", ["Fn::GetAtt": [KMSKey, Arn]]]
+    JWT_PASS: 'we45-sls-jwt-pass'
+
+plugins:
+  - serverless-python-requirements
+  - serverless-wsgi
+custom:
+  wsgi:
+    app: app.app
+    packRequirements: false
+  pythonRequirements:
+    dockerizePip: non-linux    
+      
+
+package:
+  exclude:
+    - node_modules/**
+    - "!node_modules/node-fetch/**"
+    - venv/**
+
+functions:
+  app:
+    handler: wsgi_handler.handler
+    timeout: 30
+    events:
+      - http:
+          path: signup
+          method: post
+      - http:
+          path: login
+          method: post
+      - http:
+          path: create-card
+          method: post
+      - http:
+          path: get-card
+          method: get
+          
+resources:
+  Resources:
+    KMSKey:
+      Type: AWS::KMS::Key
+      Properties: 
+        Description: "Key for accessing sls vars"
+        KeyPolicy: 
+          Version: '2012-10-17'
+          Id: "sls-key"
+          Statement:
+          - Effect: Allow   
+            Principal:              
+              AWS: "*"        
+            Action:
+              - 'kms:*'
+            Resource: "*"
+    userDynamoTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: email
+            AttributeType: S
+          - AttributeName: password
+            AttributeType: S
+        KeySchema:
+          - AttributeName: email
+            KeyType: HASH
+          - AttributeName: password
+            KeyType: RANGE
+        ProvisionedThroughput:
+          ReadCapacityUnits: '2'
+          WriteCapacityUnits: '2'
+        TableName: envelope-tables
+    LambdaRole: 
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: secrets-role
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+          Version: '2012-10-17'
+        Policies:
+          - PolicyName: secrets-role
+            PolicyDocument: 
+              Version: '2012-10-17'
+              Statement: 
+                - Effect: Allow
+                  Action:                    
+                    - "logs:CreateLogGroup"
+                    - "logs:CreateLogStream"
+                    - "logs:PutLogEvents"
+                  Resource: ["arn:aws:logs:us-west-2:*:log-group:/aws/lambda/secrets-app-*"]
+                - Effect: Allow
+                  Action:                    
+                    - "ssm:GetParameter"
+                  Resource: "arn:aws:ssm:us-west-2:*:parameter/we45-sls-jwt-pass"
+                - Effect: Allow
+                  Action:                    
+                    - "kms:Decrypt"
+                    - "kms:Encrypt"
+                    - "kms:ReEncrypt*"
+                    - "kms:GenerateDataKey*"
+                    - "kms:DescribeKey"
+                  Resource: [
+                    "arn:aws:kms:us-west-2:*:key/sls-key"
+                  ]
+                - Effect: Allow
+                  Action:                    
+                    - "dynamodb:Query"
+                    - "dynamodb:Scan"
+                    - "dynamodb:GetItem"
+                    - "dynamodb:PutItem"
+                    - "dynamodb:UpdateItem"
+                  Resource: "arn:aws:dynamodb:us-west-2:*:table/envelope-tables"
+    BasicParameter:
+      Type: "AWS::SSM::Parameter"
+      Properties:
+        Name: "we45-sls-jwt-pass"
+        Type: "String"
+        Value: "${python -c 'import sys,uuid; sys.stdout.write(uuid.uuid4().hex)' | pbcopy && pbpaste && echo}"
+        Description: "SSM Parameter for JWT auth."
